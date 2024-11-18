@@ -1,5 +1,5 @@
+import { Assets } from "@lucid-evolution/lucid";
 import BigNumber from "bignumber.js";
-import { Assets } from "lucid-cardano";
 
 import { NetworkEnvironment } from "../types/network";
 import {

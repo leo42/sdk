@@ -1,4 +1,4 @@
-import { Address, OutRef, Script } from "lucid-cardano";
+import { Address, OutRef, Script } from "@lucid-evolution/lucid";
 
 import { NetworkId } from "./network";
 

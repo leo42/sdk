@@ -1,16 +1,19 @@
-import invariant from "@minswap/tiny-invariant";
 import {
   Address,
   Assets,
   Constr,
   Credential,
+  credentialToAddress,
   Data,
-  Lucid,
+  getAddressDetails,
+  LucidEvolution,
   OutRef,
-  Tx,
-  TxComplete,
+  stakeCredentialOf,
+  TxBuilder,
+  TxSignBuilder,
   UTxO,
-} from "lucid-cardano";
+} from "@lucid-evolution/lucid";
+import invariant from "@minswap/tiny-invariant";
 
 import {
   Asset,
@@ -53,7 +56,7 @@ export type BulkOrdersOption = {
   orderOptions: OrderOptions[];
   expiredOptions?: OrderV2.ExpirySetting;
   availableUtxos: UTxO[];
-  composeTx?: Tx;
+  composeTx?: TxBuilder;
   authorizationMethodType? : OrderV2.AuthorizationMethodType;
 };
 
@@ -167,23 +170,23 @@ export type OrderOptions = (
 
 export type CancelBulkOrdersOptions = {
   orderOutRefs: OutRef[];
-  composeTx? : Tx,
+  composeTx? : TxBuilder,
   AuthorizationMethodType? : OrderV2.AuthorizationMethodType;
 };
 
 export class DexV2 {
-  private readonly lucid: Lucid;
+  private readonly lucid: LucidEvolution;
   private readonly networkId: NetworkId;
   private readonly adapter: BlockfrostAdapter;
   private readonly networkEnv: NetworkEnvironment;
   private readonly dexVersion = DexVersion.DEX_V2;
 
-  constructor(lucid: Lucid, adapter: BlockfrostAdapter) {
+  constructor(lucid: LucidEvolution, adapter: BlockfrostAdapter) {
     this.lucid = lucid;
     this.networkId =
-      lucid.network === "Mainnet" ? NetworkId.MAINNET : NetworkId.TESTNET;
+      lucid.config().network === "Mainnet" ? NetworkId.MAINNET : NetworkId.TESTNET;
     this.adapter = adapter;
-    this.networkEnv = lucidToNetworkEnv(lucid.network);
+    this.networkEnv = lucidToNetworkEnv(lucid.config().network);
   }
 
   async createPoolTx({
@@ -192,7 +195,7 @@ export class DexV2 {
     amountA,
     amountB,
     tradingFeeNumerator,
-  }: CreatePoolV2Options): Promise<TxComplete> {
+  }: CreatePoolV2Options): Promise<TxSignBuilder> {
     const config = DexV2Constant.CONFIG[this.networkId];
     // Sort ascendingly assets and its amount
     const [sortedAssetA, sortedAssetB, sortedAmountA, sortedAmountB] =
@@ -220,7 +223,7 @@ export class DexV2 {
       policyId: config.lpPolicyId,
       tokenName: lpAssetName,
     };
-    const poolBatchingStakeCredential = this.lucid.utils.getAddressDetails(
+    const poolBatchingStakeCredential = getAddressDetails(
       config.poolBatchingAddress
     )?.stakeCredential;
     invariant(
@@ -304,26 +307,26 @@ export class DexV2 {
         [factoryUtxo],
         Data.to(FactoryV2.Redeemer.toPlutusData(factoryRedeemer))
       )
-      .payToContract(
+      .pay.ToContract(
         config.poolCreationAddress,
         {
-          inline: Data.to(PoolV2.Datum.toPlutusData(poolDatum)),
+          kind : "inline" , value : Data.to(PoolV2.Datum.toPlutusData(poolDatum)),
         },
         poolValue
       )
-      .payToContract(
+      .pay.ToContract(
         config.factoryAddress,
         {
-          inline: Data.to(FactoryV2.Datum.toPlutusData(newFactoryDatum1)),
+          kind : "inline" , value : Data.to(FactoryV2.Datum.toPlutusData(newFactoryDatum1)),
         },
         {
           [config.factoryAsset]: 1n,
         }
       )
-      .payToContract(
+      .pay.ToContract(
         config.factoryAddress,
         {
-          inline: Data.to(FactoryV2.Datum.toPlutusData(newFactoryDatum2)),
+          kind : "inline" , value : Data.to(FactoryV2.Datum.toPlutusData(newFactoryDatum2)),
         },
         {
           [config.factoryAsset]: 1n,
@@ -664,12 +667,13 @@ export class DexV2 {
     const orderAddress =
       DexV2Constant.CONFIG[this.networkId].orderEnterpriseAddress;
     const orderAddressPaymentCred =
-      this.lucid.utils.getAddressDetails(orderAddress).paymentCredential;
+        getAddressDetails(orderAddress).paymentCredential;
     invariant(
       orderAddressPaymentCred,
       "order address payment credentials not found"
     );
-    return this.lucid.utils.credentialToAddress(
+    return credentialToAddress(
+      this.lucid.config().network,
       orderAddressPaymentCred,
       senderAddressStakeCred
     );
@@ -678,7 +682,7 @@ export class DexV2 {
   private getOrderScriptHash(): string | undefined {
     const orderAddress =
       DexV2Constant.CONFIG[this.networkId].orderEnterpriseAddress;
-    const addrDetails = this.lucid.utils.getAddressDetails(orderAddress);
+    const addrDetails = getAddressDetails(orderAddress);
     invariant(
       addrDetails.paymentCredential?.type === "Script",
       "order address should be a script address"
@@ -738,7 +742,7 @@ export class DexV2 {
     availableUtxos,
     composeTx,
     authorizationMethodType
-  }: BulkOrdersOption): Promise<TxComplete > {
+  }: BulkOrdersOption): Promise<TxSignBuilder > {
     // calculate total order value
     const totalOrderAssets: Record<string, bigint> = {};
     for (const option of orderOptions) {
@@ -780,7 +784,7 @@ export class DexV2 {
         orderAssets["lovelace"] = totalBatcherFee;
       }
 
-      const senderPaymentCred = this.lucid.utils.getAddressDetails(sender).paymentCredential;
+      const senderPaymentCred = getAddressDetails(sender).paymentCredential;
       invariant( senderPaymentCred, "sender address payment credentials not found");
 
       const canceller = authorizationMethodType ? { 
@@ -807,17 +811,17 @@ export class DexV2 {
       };
       let orderAddress: string;
       try {
-        const senderStakeAddress = this.lucid.utils.stakeCredentialOf(sender);
+        const senderStakeAddress = stakeCredentialOf(sender);
         orderAddress = this.buildOrderAddress(senderStakeAddress);
       } catch (e) {
         // if fails then sender address doesn't have stake credentials
         orderAddress =
           DexV2Constant.CONFIG[this.networkId].orderEnterpriseAddress;
       }
-      lucidTx.payToContract(
+      lucidTx.pay.ToContract(
         orderAddress,
         {
-          inline: Data.to(OrderV2.Datum.toPlutusData(orderDatum)),
+          kind : "inline" , value : Data.to(OrderV2.Datum.toPlutusData(orderDatum)),
         },
         orderAssets
       );
@@ -827,13 +831,12 @@ export class DexV2 {
       orderOptions.length > 1
         ? MetadataMessage.MIXED_ORDERS
         : this.getOrderMetadata(orderOptions[0]);
-
-    const limitOrderMessage = limitOrders.length > 0 ? limitOrders : undefined;
+    const limitOrderMessage = limitOrders.length > 0 ? limitOrders : [];
     lucidTx.attachMetadata(674, {
       msg: [metadata],
       limitOrders: limitOrderMessage,
     });
-    lucidTx.payToAddress(sender, reductionAssets);
+    lucidTx.pay.ToAddress(sender, reductionAssets);
     if (composeTx){
       lucidTx.compose(composeTx);
     }
@@ -845,7 +848,7 @@ export class DexV2 {
     orderOutRefs,
     composeTx,
 
-  }: CancelBulkOrdersOptions): Promise<TxComplete> {
+  }: CancelBulkOrdersOptions): Promise<TxSignBuilder> {
     const v2OrderScriptHash = this.getOrderScriptHash();
     const orderUtxos = await this.lucid.utxosByOutRef(orderOutRefs);
     if (orderUtxos.length === 0) {
@@ -865,7 +868,7 @@ export class DexV2 {
     for (const utxo of orderUtxos) {
       const orderAddr = utxo.address;
       const orderScriptPaymentCred =
-        this.lucid.utils.getAddressDetails(orderAddr).paymentCredential;
+        getAddressDetails(orderAddr).paymentCredential;
       invariant(
         orderScriptPaymentCred?.type === "Script" &&
           orderScriptPaymentCred.hash === v2OrderScriptHash,
